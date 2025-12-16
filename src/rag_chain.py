@@ -37,17 +37,23 @@ def get_rag_chain(model_type="llama"):
     )
 
     prompt = ChatPromptTemplate.from_messages([
-        ("system", system_prompt + "\n\nContext: {context}"),
+        ("system", system_prompt),
         ("human", "{input}"),
     ])
 
-    # RAG Chain using LCEL
-    rag_chain = (
-        RunnablePassthrough.assign(context=lambda x: format_docs(retriever.invoke(x["input"])))
+    # RAG Chain with Source Retrieval
+    from langchain_core.runnables import RunnableParallel
+
+    rag_chain_from_docs = (
+        RunnablePassthrough.assign(context=lambda x: format_docs(x["context"]))
         | prompt
         | llm
         | StrOutputParser()
     )
+
+    rag_chain_with_source = RunnableParallel(
+        {"context": retriever, "input": RunnablePassthrough()}
+    ).assign(answer=rag_chain_from_docs)
     
     class RAGChainWrapper:
         def __init__(self, chain):
@@ -58,7 +64,7 @@ def get_rag_chain(model_type="llama"):
                 query = inputs["input"]
             else:
                 query = inputs
-            answer = self.chain.invoke({"input": query})
-            return {"answer": answer}
+            # Returns dictionary with 'answer' and 'context'
+            return self.chain.invoke(query)
     
-    return RAGChainWrapper(rag_chain)
+    return RAGChainWrapper(rag_chain_with_source)
