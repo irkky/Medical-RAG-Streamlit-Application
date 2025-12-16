@@ -16,8 +16,8 @@ Before you begin, ensure you have:
 
 1.  **Clone the repository:**
     ```bash
-    git clone <repository_url>
-    cd <repository_folder>
+    git clone https://github.com/irkky/Medical-RAG-Streamlit-Application.git
+    cd Medical-RAG-Streamlit-Application
     ```
 
 2.  **Create and activate a virtual environment:**
