@@ -1,0 +1,14 @@
+streamlit
+python-dotenv
+pypdf
+langchain
+langchain-community
+langchain-core
+langchain-huggingface
+langchain-google-genai
+langchain-pinecone
+pinecone-client
+cryptography>=3.4
+sentence-transformers>=2.2.2
+torch
+transformers
