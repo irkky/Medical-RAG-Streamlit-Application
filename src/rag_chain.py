@@ -1,16 +1,18 @@
 import os
 from langchain_pinecone import PineconeVectorStore
 from langchain_huggingface import HuggingFaceEmbeddings
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.runnables import RunnablePassthrough
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.runnables import RunnablePassthrough, RunnableLambda
 from langchain_core.output_parsers import StrOutputParser
+from langchain.chains import create_history_aware_retriever, create_retrieval_chain
+from langchain.chains.combine_documents import create_stuff_documents_chain
 from src.models import get_llm
 
-def format_docs(docs):
-    return "\n\n".join(doc.page_content for doc in docs)
-
-def get_rag_chain(model_type="llama"):
-    embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-mpnet-base-v2")
+def get_rag_chain():
+    embeddings = HuggingFaceEmbeddings(
+        model_name="sentence-transformers/all-mpnet-base-v2",
+        model_kwargs={'device': 'cpu'}
+    )
     
     vectorstore = PineconeVectorStore(
         index_name=os.getenv("PINECONE_INDEX_NAME"),
@@ -18,10 +20,27 @@ def get_rag_chain(model_type="llama"):
     )
     
     retrieval_k = int(os.getenv("RETRIEVAL_K", "3"))
-    # "k" means retrieve the top k most relevant chunks
     retriever = vectorstore.as_retriever(search_kwargs={"k": retrieval_k})
 
-    llm = get_llm(model_type)
+    llm = get_llm()
+
+    contextualize_q_system_prompt = (
+        "Given a chat history and the latest user question "
+        "which might reference context in the chat history, "
+        "formulate a standalone question which can be understood "
+        "without the chat history. Do NOT answer the question, "
+        "just reformulate it if needed and otherwise return it as is."
+    )
+    
+    contextualize_q_prompt = ChatPromptTemplate.from_messages([
+        ("system", contextualize_q_system_prompt),
+        MessagesPlaceholder("chat_history"),
+        ("human", "{input}"),
+    ])
+    
+    history_aware_retriever = create_history_aware_retriever(
+        llm, retriever, contextualize_q_prompt
+    )
 
     system_prompt = (
         "You are an advanced medical assistant designed to help users understand complex medical documents. "
@@ -36,35 +55,36 @@ def get_rag_chain(model_type="llama"):
         "Context: {context}"
     )
 
-    prompt = ChatPromptTemplate.from_messages([
+    qa_prompt = ChatPromptTemplate.from_messages([
         ("system", system_prompt),
+        MessagesPlaceholder("chat_history"),
         ("human", "{input}"),
     ])
 
-    # RAG Chain with Source Retrieval
-    from langchain_core.runnables import RunnableParallel
+    question_answer_chain = create_stuff_documents_chain(llm, qa_prompt)
+    rag_chain = create_retrieval_chain(history_aware_retriever, question_answer_chain)
 
-    rag_chain_from_docs = (
-        RunnablePassthrough.assign(context=lambda x: format_docs(x["context"]))
-        | prompt
-        | llm
-        | StrOutputParser()
-    )
-
-    rag_chain_with_source = RunnableParallel(
-        {"context": retriever, "input": RunnablePassthrough()}
-    ).assign(answer=rag_chain_from_docs)
-    
     class RAGChainWrapper:
         def __init__(self, chain):
             self.chain = chain
         
+        def _prepare_input(self, inputs):
+            if isinstance(inputs, str):
+                return {"input": inputs, "chat_history": []}
+            if isinstance(inputs, dict):
+                if "input" not in inputs:
+                    raise ValueError("Input dict must contain 'input' key")
+                if "chat_history" not in inputs:
+                    inputs["chat_history"] = []
+                return inputs
+            raise ValueError(f"Invalid input type: {type(inputs)}")
+
         def invoke(self, inputs):
-            if isinstance(inputs, dict) and "input" in inputs:
-                query = inputs["input"]
-            else:
-                query = inputs
-            # Returns dictionary with 'answer' and 'context'
-            return self.chain.invoke(query)
+            prepared_input = self._prepare_input(inputs)
+            return self.chain.invoke(prepared_input)
+            
+        def stream(self, inputs):
+            prepared_input = self._prepare_input(inputs)
+            return self.chain.stream(prepared_input)
     
-    return RAGChainWrapper(rag_chain_with_source)
+    return RAGChainWrapper(rag_chain)
